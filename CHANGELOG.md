@@ -15,6 +15,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `codegraph_explore` no longer re-sends source it already returned earlier in the same conversation. A file it has already shown you comes back as a short pointer — the path, the symbols and the exact line range, with confirmation that the file hasn't changed since — and the space that frees is spent on code you haven't seen yet, so a follow-up call covers new ground instead of repeating the last one. If a file was edited in between, its source is always shown again in full. Set `CODEGRAPH_EXPLORE_DEDUP=0` to turn this off.
 
+- Spring scheduling and lifecycle annotations now appear in the graph. A method annotated `@Scheduled` gets a `SCHEDULED …` entry point (for example `SCHEDULED cron="0 0 2 * * ?"`), so `codegraph callers` on a scheduled method shows its schedule instead of coming up empty. `@PostConstruct` and `@PreDestroy` methods are now reachable from their bean, and an `@Async` method that nothing calls directly is surfaced as an async entry — one that already has a caller keeps its own edge. Re-index after upgrading to pick up the new nodes and edges; a project that uses none of these annotations is unaffected.
+
 ### Fixes
 
 - `codegraph_explore` now concentrates its answer on the code that actually answers your question instead of spreading it across files that merely share a word with it, so more of the answer arrives in a single call. Thanks @LeDuyViet for the detailed measurements and reproduction. (#1500)

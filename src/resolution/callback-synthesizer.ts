@@ -2757,6 +2757,100 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
   return edges;
 }
 
+// ── Spring lifecycle callbacks (@PostConstruct / @PreDestroy / @Async) ────────
+// Spring invokes @PostConstruct right after a bean's constructor and @PreDestroy
+// before the bean is discarded; neither has a static call site, so both show up
+// as "uncalled" in callers/impact. An @Async method is likewise only reachable
+// through Spring's proxy executor when nothing calls it statically. Bridge each
+// to its OWNER CLASS as the caller (`class → method` calls edge): the class is
+// the bean the container operates on, so `codegraph callers <m>` stops being
+// empty and the method reads as a lifecycle / async entry point of its bean.
+// @Async is CONDITIONAL — a method that already has a static `calls` caller
+// keeps its real edge and gets no synthetic one (it isn't an entry). @PostConstruct
+// / @PreDestroy always bridge (the container always invokes them). Like
+// springEventEdges, the annotation block is read from the method's leading
+// `@`-lines (Java method startLine includes them), bounded so it can't bleed
+// into the next method. Provenance `heuristic`, `synthesizedBy`
+// 'spring-lifecycle' / 'spring-async', `registeredAt` is the annotation's line.
+const SPRING_LIFECYCLE_ANNO_RE = /@(PostConstruct|PreDestroy)\b/;
+const SPRING_ASYNC_ANNO_RE = /@Async\b/;
+const SPRING_LIFECYCLE_JAVA_EXT = /\.java$/;
+
+async function springLifecycleEdges(queries: QueryBuilder, ctx: ResolutionContext, onYield: MaybeYield): Promise<Edge[]> {
+  let scannedFiles = 0;
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const file of ctx.getAllFiles()) {
+    if ((++scannedFiles & 63) === 0) await onYield();
+    if (!SPRING_LIFECYCLE_JAVA_EXT.test(file)) continue;
+    const content = ctx.readFile(file);
+    if (!content || (!content.includes('@PostConstruct') && !content.includes('@PreDestroy') && !content.includes('@Async'))) continue;
+    const lines = content.split('\n');
+    for (const node of ctx.getNodesInFile(file)) {
+      if (node.kind !== 'method') continue;
+      // Collect this method's own leading annotation block: consecutive `@`-lines
+      // (plus wrapped multi-line annotation arguments and blank lines between
+      // stacked annotations) from startLine down to the declaration. `parens`
+      // keeps a wrapped `@Anno(\n  value = x\n)` inside the block; the bound is
+      // generous because a multi-line annotation can span several lines, but it
+      // can never bleed past the next declaration.
+      const annoLines: string[] = [];
+      let parens = 0;
+      for (let i = node.startLine - 1; i < lines.length && i < node.startLine + 20; i++) {
+        const t = (lines[i] ?? '').trim();
+        if (t.startsWith('@')) {
+          parens += (t.match(/\(/g) ?? []).length - (t.match(/\)/g) ?? []).length;
+          annoLines.push(t);
+          continue;
+        }
+        if (parens > 0) {
+          parens += (t.match(/\(/g) ?? []).length - (t.match(/\)/g) ?? []).length;
+          annoLines.push(t);
+          continue;
+        }
+        if (t === '') continue; // blank line between stacked annotations
+        break; // reached the declaration
+      }
+      const head = annoLines.join('\n');
+      const isLifecycle = SPRING_LIFECYCLE_ANNO_RE.test(head);
+      const isAsync = SPRING_ASYNC_ANNO_RE.test(head);
+      if (!isLifecycle && !isAsync) continue;
+      if (isAsync && !isLifecycle) {
+        // @Async is only an ENTRY when nothing statically calls the method — a
+        // method with a real caller keeps its own edge (it's invoked directly).
+        if (queries.getIncomingEdges(node.id, ['calls']).length > 0) continue;
+      }
+      // Owner class = the `contains` parent (the bean the container operates on).
+      // Pick the FIRST parent that's class-like: extraction emits exactly one
+      // `contains` edge per method today, but filtering by kind is robust to a
+      // future parent kind (file, enum, …) being added without the row order
+      // becoming load-bearing.
+      const owner =
+        queries
+          .getIncomingEdges(node.id, ['contains'])
+          .map((e) => queries.getNodeById(e.source))
+          .find((n) => n && (n.kind === 'class' || n.kind === 'interface' || n.kind === 'struct')) ?? null;
+      if (!owner) continue;
+      const key = `${owner.id}>${node.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: owner.id,
+        target: node.id,
+        kind: 'calls',
+        line: node.startLine,
+        provenance: 'heuristic',
+        metadata: {
+          synthesizedBy: isLifecycle ? 'spring-lifecycle' : 'spring-async',
+          annotation: isLifecycle ? `@${SPRING_LIFECYCLE_ANNO_RE.exec(head)![1]!}` : '@Async',
+          registeredAt: `${file}:${node.startLine}`,
+        },
+      });
+    }
+  }
+  return edges;
+}
+
 // ── MediatR request/notification dispatch (C#/.NET) ───────────────────────────
 // MediatR decouples a Send/Publish call site from its Handle method through a mediator,
 // linked by the request/notification TYPE (the IRequestHandler<T,…> generic):
@@ -3573,6 +3667,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'vuexEdges', gate: (has) => has('vue', ...JS_FAMILY), run: (_q, c, y) => vuexDispatchEdges(c, y) },
   { name: 'celeryEdges', gate: (has) => has('python'), run: (_q, c, y) => celeryDispatchEdges(c, y) },
   { name: 'springEdges', gate: (has) => has('java'), run: (_q, c, y) => springEventEdges(c, y) },
+  { name: 'springLifecycleEdges', gate: (has) => has('java'), run: (q, c, y) => springLifecycleEdges(q, c, y) },
   { name: 'mediatrEdges', gate: (has) => has('csharp'), run: (_q, c, y) => mediatrDispatchEdges(c, y) },
   { name: 'sidekiqEdges', gate: (has) => has('ruby'), run: (_q, c, y) => sidekiqDispatchEdges(c, y) },
   {

@@ -46,8 +46,12 @@ export const springResolver: FrameworkResolver = {
         if (content && (
           content.includes('@SpringBootApplication') ||
           content.includes('@RestController') ||
+          content.includes('@Controller') ||
           content.includes('@Service') ||
-          content.includes('@Repository')
+          content.includes('@Repository') ||
+          content.includes('@Component') ||
+          content.includes('@Configuration') ||
+          content.includes('@Bean')
         )) {
           return true;
         }
@@ -261,6 +265,53 @@ export const springResolver: FrameworkResolver = {
           language: lang,
         });
       }
+    }
+
+    // @Scheduled — Spring scheduling entry point. Unlike the verb mappings above
+    // there's no HTTP path to route on: Spring's scheduler invokes the method
+    // itself, so this is a pure ENTRY node — `codegraph callers` on the method
+    // shows the schedule (e.g. `SCHEDULED cron="0 0 2 * * ?"`) instead of an
+    // empty result. The node name carries the schedule so the entry is readable.
+    const scheduledRe = /@Scheduled\b\s*(\([^)]*\))?/g;
+    while ((match = scheduledRe.exec(safe)) !== null) {
+      const args = (match[1] || '').replace(/^\(|\)$/g, '');
+      const paramM = args.match(/(cron|fixedRate|fixedDelay|fixedRateString|fixedDelayString)\s*=\s*([^,)]+)/);
+      const label = paramM ? `SCHEDULED ${paramM[1]}=${paramM[2]!.trim()}` : 'SCHEDULED';
+      const after = safe.slice(match.index + match[0].length, match.index + match[0].length + 600);
+      // Visibility keyword, a modifier-less default-visibility declaration (Spring
+      // schedules non-public methods via reflection), or Kotlin `fun`.
+      const methodMatch = after.match(
+        /\bfun\s+(\w+)\s*\(|\b(?:public|private|protected)\s+[^;{=]*?\s+(\w+)\s*\(|\b(?:void|[\w<>,?\[\] .]+?)\s+(\w+)\s*\(/
+      );
+      if (!methodMatch) continue;
+      const methodName = (methodMatch[1] ?? methodMatch[2] ?? methodMatch[3])!;
+      const line = safe.slice(0, match.index).split('\n').length;
+      // The schedule kind is folded into the identity so stacked @Scheduled
+      // annotations on one method (a Spring feature) stay distinguishable.
+      const schedKey = paramM ? paramM[1] : 'bare';
+      const routeNode: Node = {
+        id: `route:${filePath}:${line}:SCHEDULED:${methodName}:${schedKey}`,
+        kind: 'route',
+        name: label,
+        qualifiedName: `${filePath}::route:SCHEDULED:${methodName}:${schedKey}`,
+        filePath,
+        startLine: line,
+        endLine: line,
+        startColumn: 0,
+        endColumn: match[0].length,
+        language: lang,
+        updatedAt: now,
+      };
+      nodes.push(routeNode);
+      references.push({
+        fromNodeId: routeNode.id,
+        referenceName: methodName,
+        referenceKind: 'references',
+        line,
+        column: 0,
+        filePath,
+        language: lang,
+      });
     }
 
     // Method-level @RequestMapping (older style: `@RequestMapping(value="/x",

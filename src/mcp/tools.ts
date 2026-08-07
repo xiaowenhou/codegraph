@@ -2413,6 +2413,21 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'spring-lifecycle') {
+      const anno = typeof m.annotation === 'string' ? m.annotation : '@PostConstruct/@PreDestroy';
+      return {
+        label: `Spring lifecycle — container invokes ${anno} on the bean (dynamic dispatch)`,
+        compact: `dynamic: Spring ${anno} lifecycle${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'spring-async') {
+      return {
+        label: `Spring @Async — proxy executor may run this method (dynamic dispatch)`,
+        compact: `dynamic: Spring @Async entry${at}`,
+        registeredAt,
+      };
+    }
     // Generic fallback for any other synthesizer (redux-thunk, gin-middleware-chain,
     // flutter-build, …): a synthesized hop must never read as a bare static `calls`.
     // It's a dynamic-dispatch bridge — label it as one and keep its wiring site.
