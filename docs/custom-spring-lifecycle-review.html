@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeGraph 定制化回顾 · Spring 生命周期注解支持</title>
+<style>
+  :root {
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #59636e;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --red: #cf222e;
+    --amber: #9a6700;
+    --code-bg: #eff2f5;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); margin: 0; padding: 32px 16px; line-height: 1.6;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header.card { background: linear-gradient(135deg, #0d1117, #1f6feb33); color: #fff; }
+  header.card h1 { margin: 0 0 8px; font-size: 26px; }
+  header.card p { margin: 4px 0; opacity: .92; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 24px; margin: 16px 0;
+  }
+  h2 {
+    font-size: 19px; border-bottom: 2px solid var(--border); padding-bottom: 6px;
+    margin: 0 0 14px; color: var(--accent);
+  }
+  h3 { font-size: 16px; margin: 18px 0 8px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0f3f6; font-weight: 600; white-space: nowrap; }
+  code {
+    font-family: var(--mono); font-size: 13px; background: var(--code-bg);
+    padding: 2px 5px; border-radius: 4px;
+  }
+  pre {
+    background: #0d1117; color: #e6edf3; border-radius: 8px; padding: 14px 16px;
+    overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  .ok { color: var(--green); font-weight: 600; }
+  .bad { color: var(--red); font-weight: 600; }
+  .warn { color: var(--amber); font-weight: 600; }
+  .tag {
+    display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 12px;
+    font-weight: 600; margin-right: 6px;
+  }
+  .tag.green { background: #dafbe1; color: var(--green); }
+  .tag.red { background: #ffebe9; color: var(--red); }
+  .tag.blue { background: #ddf4ff; color: var(--accent); }
+  .tag.gray { background: #eaeef2; color: var(--muted); }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+  .mono { font-family: var(--mono); font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="card">
+  <h1>📘 CodeGraph 定制化回顾文档</h1>
+  <p><strong>主题：</strong>Spring 生命周期注解（<code>@Scheduled</code>/<code>@PostConstruct</code>/<code>@PreDestroy</code>/<code>@Async</code>）调用链支持</p>
+  <p><strong>记录日期：</strong>2026-08-07 ｜ <strong>定制分支：</strong><code class="mono">feat/spring-lifecycle-annotations</code></p>
+  <p class="muted" style="color:#c0c8d0">用途：fork 后快速回顾「同步进度 · 定制内容 · 测试结论」，长期维护依据。</p>
+</header>
+
+<!-- ============ 1. 仓库结构 ============ -->
+<div class="card">
+  <h2>1. 仓库与分支结构</h2>
+  <p>基于官方 <code class="mono">colbymchenry/codegraph</code> fork，采用 <strong>双 remote + 双分支</strong> 模型：</p>
+  <table>
+    <tr><th>项</th><th>值</th><th>说明</th></tr>
+    <tr><td>GitHub fork</td><td class="mono">github.com/xiaowenhou/codegraph</td><td>你的仓库，所有定制提交推到这里</td></tr>
+    <tr><td>本地 origin</td><td class="mono">git@github.com:xiaowenhou/codegraph.git</td><td>你的 fork（push 目标）</td></tr>
+    <tr><td>本地 upstream</td><td class="mono">https://github.com/colbymchenry/codegraph.git</td><td>官方（只读，仅 fetch）</td></tr>
+    <tr><td><code class="mono">main</code> 分支</td><td class="ok">纯官方代码</td><td>只做 <code class="mono">upstream merge</code>，保持与官方同步，不做定制</td></tr>
+    <tr><td><code class="mono">feat/spring-lifecycle-annotations</code></td><td class="warn">定制分支</td><td>在官方基础上叠加 Spring 定制；官方更新时 <code class="mono">merge main</code> 进来</td></tr>
+  </table>
+</div>
+
+<!-- ============ 2. 同步状态 ============ -->
+<div class="card">
+  <h2>2. 当前与官方的同步状态</h2>
+  <table>
+    <tr><th>项</th><th>Commit</th><th>日期</th><th>内容</th></tr>
+    <tr><td>官方 <code class="mono">upstream/main</code></td><td class="mono">969ea1e</td><td>2026-08-06</td><td>Merge PR #1525（explore 大改版 CG-24 系列）</td></tr>
+    <tr><td>本地 <code class="mono">main</code></td><td class="mono">969ea1e</td><td>2026-08-06</td><td class="ok">与官方完全一致（已同步）</td></tr>
+    <tr><td>定制分支 HEAD</td><td class="mono">861ca9a</td><td>2026-08-07</td><td>官方 24 个新提交 + 定制 commit <code class="mono">6b7ca3d</code></td></tr>
+    <tr><td>官方更新合并进度</td><td class="mono">d6d1728 → 969ea1e</td><td>—</td><td><span class="tag green">已合并</span> 24 个官方新提交（<span class="ok">零冲突</span>）</td></tr>
+  </table>
+  <p class="muted">说明：本次 fork 后官方又有 <strong>24 个新提交</strong>（explore 检索大改版 CG-24/26/27/28/30/31/36 系列，含 <code class="mono">src/mcp/tools.ts</code> 912 行改动），已通过 merge 演练全部并入定制分支并验证通过。</p>
+</div>
+
+<!-- ============ 3. 同步工作流 ============ -->
+<div class="card">
+  <h2>3. 后续与官方同步的工作流（速查）</h2>
+  <h3>3.1 日常开发定制</h3>
+  <pre><code>git checkout feat/spring-lifecycle-annotations
+# ... 修改代码 ...
+git commit -am "feat(...): 你的改动说明"
+git push origin feat/spring-lifecycle-annotations</code></pre>
+
+  <h3>3.2 同步官方新功能（按需执行）</h3>
+  <pre><code>git fetch upstream                            # 拉官方最新
+git checkout main
+git merge upstream/main                       # main 跟上官方（--ff-only 若未分叉）
+git push origin main                          # main 同步到你的 fork
+git checkout feat/spring-lifecycle-annotations
+git merge main                                # 官方更新合入你的定制分支
+git push origin feat/spring-lifecycle-annotations</code></pre>
+
+  <h3>3.3 官方覆盖定制功能时的取舍</h3>
+  <pre><code>git merge main    # 若报冲突，则：
+git status        # 列出冲突文件（如 src/mcp/tools.ts）
+git diff          # 对比双方改动
+# ── 官方实现更好 → 用官方版：
+git checkout --theirs src/mcp/tools.ts
+# ── 你的定制更适合 PEMS → 保留你的：
+git checkout --ours src/mcp/tools.ts
+# ── 或手动编辑后：
+git add &lt;文件&gt; &amp;&amp; git commit</code></pre>
+  <p><strong>建议：</strong>若官方正式支持了 <code class="mono">@Scheduled</code>，merge 时对照检查。若官方实现合理，可切回官方版，用 <code class="mono">git log -p</code> 找到你的原始 commit <code class="mono">6b7ca3d</code> 做反向参考后摘除定制。建议在分支上维护一个 <code class="mono">CUSTOM.md</code> 记录「哪些是定制 / 为什么保留」。</p>
+</div>
+
+<!-- ============ 4. 本次定制功能 ============ -->
+<div class="card">
+  <h2>4. 本次定制了哪些功能</h2>
+  <p>目标：让 PEMS（Spring Boot 项目）的 <code class="mono">@Scheduled</code>/<code class="mono">@PostConstruct</code>/<code class="mono">@PreDestroy</code>/<code class="mono">@Async</code> 注解方法在图谱中不再断链（原 callers 为空）。</p>
+  <table>
+    <tr><th>注解</th><th>图谱建模</th><th>效果（PEMS 实测）</th></tr>
+    <tr>
+      <td><code class="mono">@Scheduled</code></td>
+      <td>提取阶段创建 <span class="tag blue">route 入口</span> <code class="mono">SCHEDULED cron="…"</code></td>
+      <td><code class="mono">callers scheduleSync</code> → <span class="ok">route SCHEDULED fixedRateString="${mqtt.sync.interval:300000}"</span>（原为空）</td>
+    </tr>
+    <tr>
+      <td><code class="mono">@PostConstruct</code></td>
+      <td>合成「<strong>宿主类 → 方法</strong>」calls 边（bean 生命周期增强）</td>
+      <td><code class="mono">callers TaskScheduler.start</code> → <span class="ok">class TaskScheduler</span></td>
+    </tr>
+    <tr>
+      <td><code class="mono">@PreDestroy</code></td>
+      <td>同上</td>
+      <td><code class="mono">callers TaskScheduler.stop</code> → <span class="ok">class TaskScheduler</span></td>
+    </tr>
+    <tr>
+      <td><code class="mono">@Async</code>（无静态调用方）</td>
+      <td>合成「<strong>宿主类 → 方法</strong>」calls 边（异步入口）</td>
+      <td><code class="mono">callers onThresholdAlarm</code> → <span class="ok">method handle</span>(事件边) + <span class="ok">class AlarmLogEngine</span>(@Async 入口) 并存</td>
+    </tr>
+    <tr>
+      <td><code class="mono">@Async</code>（有静态调用方）</td>
+      <td class="warn">不建边</td>
+      <td>保持原有真实调用边，不产生额外入口（条件逻辑）</td>
+    </tr>
+  </table>
+  <h3>附带增强</h3>
+  <ul>
+    <li><strong>框架探测增强</strong>：<code class="mono">springResolver.detect()</code> 补认 <code class="mono">@Controller</code>/<code class="mono">@Component</code>/<code class="mono">@Configuration</code>/<code class="mono">@Bean</code>（原只认 <code class="mono">@SpringBootApplication</code>/<code class="mono">@RestController</code>/<code class="mono">@Service</code>/<code class="mono">@Repository</code>）——纯 <code class="mono">@Component</code> 项目也能启用 Spring 框架解析。</li>
+    <li><strong>默认可见性方法</strong>：无 <code class="mono">public/private/protected</code> 修饰符的 <code class="mono">@Scheduled</code> 方法也能建入口（Spring 通过反射调度非 public 方法）。</li>
+    <li><strong>跨行注解</strong>：注解块扫描支持多行参数（<code class="mono">@Anno(\n value=x\n)</code>）与空行，不再漏检。</li>
+    <li><strong>route id 消歧</strong>：同一方法叠多个 <code class="mono">@Scheduled</code> 时 id/qualifiedName 可区分。</li>
+    <li><strong>宿主类解析加固</strong>：按 kind 过滤 <code class="mono">contains</code> parent，只认 class/interface/struct。</li>
+  </ul>
+</div>
+
+<!-- ============ 5. 改动文件 ============ -->
+<div class="card">
+  <h2>5. 改动了哪些文件</h2>
+  <table>
+    <tr><th>文件</th><th>改动量</th><th>内容</th></tr>
+    <tr><td class="mono">src/resolution/frameworks/java.ts</td><td>+53 行</td><td>① <code class="mono">@Scheduled</code> → SCHEDULED route 入口 ② detect 补认 4 个注解 ③ 默认可见性方法支持 ④ route id 加参数消歧</td></tr>
+    <tr><td class="mono">src/resolution/callback-synthesizer.ts</td><td>+95 行</td><td>新合成器 <code class="mono">springLifecycleEdges</code>（@PostConstruct/@PreDestroy 无条件、@Async 条件入口）+ SYNTH_PASSES 注册 + 注解块扫描健壮化 + owner kind 过滤</td></tr>
+    <tr><td class="mono">src/mcp/tools.ts</td><td>+15 行</td><td><code class="mono">synthEdgeNote</code> 加 <code class="mono">spring-lifecycle</code>/<code class="mono">spring-async</code> 标签（trail 显示 <code class="mono">[dynamic: Spring @Async entry]</code>）</td></tr>
+    <tr><td class="mono">__tests__/spring-lifecycle-synthesizer.test.ts</td><td>新建 +170 行</td><td>定制测试（含负例 + clean-control + 默认可见性 + 跨行注解场景）</td></tr>
+    <tr><td class="mono">CHANGELOG.md</td><td>+2 行</td><td>[Unreleased] 新增 New Features 条目</td></tr>
+  </table>
+  <p class="muted">提交：<code class="mono">6b7ca3d</code> feat(resolution): Spring @Scheduled/@PostConstruct/@PreDestroy/@Async call-chain support</p>
+</div>
+
+<!-- ============ 6. 测试结果 ============ -->
+<div class="card">
+  <h2>6. 测试结果</h2>
+
+  <h3>6.1 定制相关测试（全部通过 ✅）</h3>
+  <table>
+    <tr><th>测试</th><th>结果</th></tr>
+    <tr><td class="mono">spring-lifecycle-synthesizer.test.ts</td><td><span class="tag green">2/2 通过</span> 主测试（四注解 + 负例）+ clean-control</td></tr>
+    <tr><td class="mono">synthesis-progress + spring-event + mybatis + frameworks + sqlite-backend</td><td><span class="tag green">136/136 通过</span> 相关回归（含 pass 数锁定测试）</td></tr>
+    <tr><td class="mono">合并官方更新后再跑（lifecycle + progress + spring-event + frameworks）</td><td><span class="tag green">119/119 通过</span> 确认官方 explore 大改版与定制兼容</td></tr>
+  </table>
+
+  <h3>6.2 全量测试（npm test）</h3>
+  <table>
+    <tr><th>维度</th><th>结果</th></tr>
+    <tr><td>测试总数</td><td>2928 tests（171 files）</td></tr>
+    <tr><td>通过</td><td><span class="tag green">1919 passed</span></td></tr>
+    <tr><td>跳过</td><td><span class="tag gray">214 skipped</span></td></tr>
+    <tr><td>失败</td><td><span class="tag red">70 failed（15 files）</span></td></tr>
+    <tr><td>与 main 基线对比</td><td><span class="tag green">零回归</span>（main 基线 71 failed，feature 的 70 个全在其内；feature 无任何新增失败）</td></tr>
+  </table>
+
+  <h3>6.3 未跑成功/失败的测试与原因</h3>
+  <p class="warn">⚠️ 全部 70 个失败均为 <strong>Windows 平台预存在</strong>，在 main 分支（无任何定制）同样失败，通过 <code class="mono">git stash</code> 对比验证 <strong>零回归</strong>。与本次 Spring 定制无关。</p>
+  <table>
+    <tr><th>失败类别</th><th>数量</th><th>原因（Windows 平台）</th></tr>
+    <tr><td class="mono">codegraph version affordances</td><td>9</td><td>CLI 子进程行为差异（spawn 的二进制/环境变量）</td></tr>
+    <tr><td class="mono">Shared MCP daemon (#411)</td><td>9</td><td>Windows 上 spawn 后台 daemon 进程的生命周期问题（CLAUDE.md 已记录为已知）</td></tr>
+    <tr><td class="mono">CLI color handling (#1281)</td><td>6</td><td>CLI 管道/ANSI 行为在 Windows 下的差异</td></tr>
+    <tr><td class="mono">No-root-index session policy</td><td>4</td><td>MCP 子进程 spawn + 超时（Windows 进程启动慢）</td></tr>
+    <tr><td class="mono">worktree 检测（#155/#926/#1031）</td><td>10</td><td>git worktree 行为在 Windows 下的差异</td></tr>
+    <tr><td class="mono">MCP initialize / roots</td><td>6</td><td>Windows 上 spawn <code class="mono">serve --mcp</code> 子进程后文件锁/超时</td></tr>
+    <tr><td class="mono">codegraph node / query / status / index / affected</td><td>15</td><td>CLI 子进程在 Windows 下的行为差异</td></tr>
+    <tr><td class="mono">JVM FQN imports (Kotlin/Java)</td><td>3</td><td><span class="bad">EPERM</span> 临时目录清理失败（SQLite 文件句柄释放延迟，CLAUDE.md 已记录）</td></tr>
+    <tr><td class="mono">ArkTS / ohpm / ArkUI 鸿蒙</td><td>8</td><td>鸿蒙 ArkTS 解析/合成器相关，Windows 环境不支持</td></tr>
+  </table>
+  <details>
+    <summary>查看完整 70 个失败测试清单（折叠）</summary>
+    <pre><code>ArkTS attribute-chain resolution precision
+ArkTS ohpm workspace import resolution
+ArkUI @ohos.events.emitter bridge ×2
+ArkUI router bridge (pushUrl literal → @Entry struct)
+ArkUI state → build() re-render bridge
+ohpm main entry (custom barrel + .ts consumer)
+CLI color handling (#1281) ×6
+MCP initialize handshake (issue #172) ×3
+MCP project resolution via roots/list (issue #196) ×3
+No-root-index session policy ×4
+Shared MCP daemon (issue #411) ×9
+codegraph affected — input path normalization (#825)
+codegraph index — full re-index keeps the graph populated (#874) ×3
+codegraph index — recovers a stale/oversized prior index (#1067) ×2
+codegraph node — argument handling (#1044) ×3
+codegraph node — symbol pinned to a file includes the body (#1284)
+codegraph query — score rendering (#1045) ×2
+codegraph status --json — CI fields (#329) ×2
+codegraph version affordances ×9
+detectWorktreeIndexMismatch (issue #155) ×3
+detectWorktreeIndexMismatch — nested repos covered by the parent index (#1031, #1033) ×3
+worktree mismatch surfaces on hot read tools (issue #155) ×3
+worktree mismatch verdict re-resolves when the index root changes (#926)
+index completeness marker (index_state) ×2
+JVM FQN imports — end-to-end ×3</code></pre>
+  </details>
+</div>
+
+<!-- ============ 7. PEMS 实测 ============ -->
+<div class="card">
+  <h2>7. PEMS 实测验证</h2>
+  <p>项目：<code class="mono">D:\project\pems_v2</code>（754 文件）。用本地构建的 dist 重新索引。</p>
+  <table>
+    <tr><th>指标</th><th>值</th></tr>
+    <tr><td>索引耗时</td><td><span class="ok">2.8 秒</span>（v1.5.0 Rust 内核）</td></tr>
+    <tr><td>节点 / 边</td><td class="mono">19,380 nodes / 38,547 edges</td></tr>
+    <tr><td><code class="mono">@Scheduled</code></td><td><span class="tag green">9</span> 个 SCHEDULED route 入口节点（PEMS 普查 9 处，完全匹配）</td></tr>
+    <tr><td><code class="mono">@PostConstruct</code></td><td><span class="tag green">13</span> 条 spring-lifecycle 边（普查 13 处，匹配）</td></tr>
+    <tr><td><code class="mono">@PreDestroy</code></td><td><span class="tag green">8</span> 条 spring-lifecycle 边（普查 8 处，匹配）</td></tr>
+    <tr><td><code class="mono">@Async</code></td><td><span class="tag green">5</span> 条 spring-async 入口边（普查 15 处中 10 个有静态调用方正确跳过）</td></tr>
+  </table>
+  <h3>callers 验证示例</h3>
+  <pre><code>$ codegraph callers scheduleSync
+Callers of "scheduleSync" (1):
+  route  SCHEDULED fixedRateString="${mqtt.sync.interval:300000}"
+    backend/pems-collector/.../MqttSyncScheduler.java:46
+
+$ codegraph callers onThresholdAlarm
+Callers of "onThresholdAlarm" (2):
+  method  handle                 # 事件边（springEventEdges，既有）
+  class   AlarmLogEngine         # @Async 入口（本次定制）
+    backend/pems-collector/.../AlarmLogEngine.java:40
+
+$ codegraph node onThresholdAlarm
+Called by ← handle [dynamic: spring event @...:141],
+            AlarmLogEngine [dynamic: Spring @Async entry @...AlarmLogEngine.java:104]</code></pre>
+</div>
+
+<!-- ============ 8. 使用说明 ============ -->
+<div class="card">
+  <h2>8. 构建与使用</h2>
+  <pre><code>npm ci                                   # 安装依赖（首次）
+npm run build                            # 编译到 dist/
+node dist/bin/codegraph.js &lt;命令&gt;         # 在项目目录下运行
+# 例如在 PEMS 目录：
+node D:\project\codegraph\dist\bin\codegraph.js callers scheduleSync</code></pre>
+  <ul>
+    <li>PEMS 已用新二进制重新索引；旧索引备份在 <code class="mono">.codegraph/codegraph.db.bak-20260807</code>（确认无误后可删）。</li>
+    <li>新增合成边需要 <strong>重新索引</strong> 才会出现在图谱中（<code class="mono">codegraph index</code>）。</li>
+  </ul>
+</div>
+
+<!-- ============ 9. 后续规划 ============ -->
+<div class="card">
+  <h2>9. 后续规划</h2>
+  <ul>
+    <li><strong>持续同步</strong>：定期执行第 3 节工作流，保持 <code class="mono">main</code> 跟随官方。</li>
+    <li><strong>可能的后续定制方向</strong>：<code class="mono">@ExceptionHandler</code>/<code class="mono">@RestControllerAdvice</code> 异常分发链、<code class="mono">@Transactional</code> 事务切面标注（当前源码均未处理，属既有盲区）。</li>
+    <li><strong>官方冲突取舍</strong>：若官方新增 Spring 注解支持，按 3.3 节决策。</li>
+  </ul>
+</div>
+
+<footer class="card muted">
+  <p>本文档由 Claude Code 协助生成，记录于 fork 工作流搭建完成之日。文件位置：<code class="mono">docs/custom-spring-lifecycle-review.html</code></p>
+</footer>
+
+</div>
+</body>
+</html>
