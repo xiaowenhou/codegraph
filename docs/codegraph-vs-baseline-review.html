@@ -1,0 +1,412 @@
+<title>CodeGraph A/B 对比评估 · 检索链路准确性 / 时间 / token</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --surface-2: #efeeea;
+    --ink: #20242c;
+    --muted: #5c6169;
+    --line: #e2e1dc;
+    --accent: #c94f2a;
+    --accent-soft: #fbeae2;
+    --with: #0e7a4d;
+    --with-soft: #e4f3eb;
+    --without: #b0452f;
+    --without-soft: #fbeae7;
+    --warn: #9a6700;
+    --warn-soft: #f5efd9;
+    --ok: #1a7f37;
+    --bad: #cf222e;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161b;
+      --surface: #1d2026;
+      --surface-2: #232730;
+      --ink: #e6e8ec;
+      --muted: #9aa1ab;
+      --line: #2d3139;
+      --accent: #e2764f;
+      --accent-soft: #3a2620;
+      --with: #3fb950;
+      --with-soft: #173324;
+      --without: #f0856a;
+      --without-soft: #3a241f;
+      --warn: #d4a72c;
+      --warn-soft: #33290f;
+      --ok: #3fb950;
+      --bad: #f85149;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161b;
+    --surface: #1d2026;
+    --surface-2: #232730;
+    --ink: #e6e8ec;
+    --muted: #9aa1ab;
+    --line: #2d3139;
+    --accent: #e2764f;
+    --accent-soft: #3a2620;
+    --with: #3fb950;
+    --with-soft: #173324;
+    --without: #f0856a;
+    --without-soft: #3a241f;
+    --warn: #d4a72c;
+    --warn-soft: #33290f;
+    --ok: #3fb950;
+    --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
+  .mono { font-family: var(--mono); }
+  .num { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.92em; }
+
+  /* ── hero ─────────────────────────────────── */
+  .hero {
+    background: linear-gradient(135deg, #101216, #1f2229 60%, #2a2119);
+    color: #f2f3f5; border-radius: 14px; padding: 36px 38px 30px;
+    margin-bottom: 26px;
+  }
+  .hero h1 { margin: 0 0 8px; font-size: 27px; letter-spacing: -0.01em; text-wrap: balance; }
+  .hero p.sub { margin: 0 0 20px; color: #b9bec7; font-size: 14px; }
+  .hero .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag { display: inline-block; font-size: 12px; padding: 3px 10px; border-radius: 20px; font-weight: 600; }
+  .tag.orange { background: rgba(226,118,79,.18); color: #f0a487; border: 1px solid rgba(226,118,79,.35); }
+  .tag.gray { background: rgba(255,255,255,.08); color: #c3c8d1; }
+  .tag.green { background: rgba(63,185,80,.16); color: #8fe0a0; border: 1px solid rgba(63,185,80,.3); }
+  .tag.red { background: rgba(248,81,73,.14); color: #ff9c96; border: 1px solid rgba(248,81,73,.3); }
+
+  /* ── sections ─────────────────────────────── */
+  section { margin: 30px 0; }
+  h2 {
+    font-size: 19px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin: 0 0 18px;
+    color: var(--ink); display: flex; align-items: baseline; gap: 10px; text-wrap: balance;
+  }
+  h2 .idx { color: var(--accent); font-family: var(--mono); font-size: 14px; }
+  h3 { font-size: 15.5px; margin: 22px 0 8px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+
+  /* ── cards ────────────────────────────────── */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin: 14px 0; }
+  .tldr { border-left: 4px solid var(--accent); }
+
+  /* ── tables ───────────────────────────────── */
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 7px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+  td { background: var(--surface); }
+  td.ind { font-variant-numeric: tabular-nums; }
+  .arm-with { color: var(--with); font-weight: 600; }
+  .arm-without { color: var(--without); font-weight: 600; }
+  .delta-good { color: var(--ok); font-weight: 600; }
+  .delta-bad { color: var(--bad); font-weight: 600; }
+  .delta-neutral { color: var(--muted); }
+
+  /* ── callout pills ────────────────────────── */
+  .pill { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 12px; letter-spacing: 0.02em; }
+  .pill.win { background: var(--with-soft); color: var(--with); }
+  .pill.lose { background: var(--without-soft); color: var(--without); }
+  .pill.tie { background: var(--surface-2); color: var(--muted); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+
+  .verdict { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0 4px; }
+
+  code {
+    font-family: var(--mono); font-size: 12.5px; background: var(--surface-2);
+    padding: 2px 6px; border-radius: 4px;
+  }
+  pre {
+    background: #0d1117; color: #e6edf3; border-radius: 8px; padding: 14px 16px;
+    overflow-x: auto; font-size: 12.5px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+
+  /* ── bars ─────────────────────────────────── */
+  .bars { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+  .bar-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; }
+  .bar-label { font-size: 12.5px; color: var(--muted); text-align: right; }
+  .bar-track { display: flex; flex-direction: column; gap: 3px; }
+  .bar-line { display: flex; align-items: center; gap: 8px; }
+  .bar-name { width: 74px; font-size: 11.5px; color: var(--muted); text-align: right; flex-shrink: 0; }
+  .bar-fill { height: 13px; border-radius: 3px; }
+  .bar-val { font-size: 11.5px; font-family: var(--mono); white-space: nowrap; }
+  .bar-fill.with { background: var(--with); }
+  .bar-fill.without { background: var(--without); }
+
+  /* ── spectrum ─────────────────────────────── */
+  .spectrum { display: flex; gap: 0; border-radius: 10px; overflow: hidden; margin: 16px 0; border: 1px solid var(--line); }
+  .spectrum .seg { flex: 1; padding: 14px 16px; font-size: 12.5px; }
+  .spectrum .seg.win { background: var(--with-soft); color: var(--with); }
+  .spectrum .seg.tie { background: var(--surface-2); color: var(--muted); }
+  .spectrum .seg.lose { background: var(--without-soft); color: var(--without); }
+  .spectrum .seg .t { font-weight: 700; display: block; }
+  .spectrum .seg .d { font-size: 11.5px; opacity: .9; }
+
+  .callout { border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px; border: 1px solid; }
+  .callout.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+  .callout.info { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .callout .ttl { font-weight: 700; display: block; margin-bottom: 2px; }
+
+  footer { margin-top: 40px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 16px; }
+  a { color: var(--accent); }
+</style>
+
+<div class="wrap">
+
+<!-- ══════════ HERO ══════════ -->
+<div class="hero">
+  <h1>CodeGraph A/B 对比评估</h1>
+  <p class="sub">同一 PEMS 项目 · 有 codegraph(定制版) vs 无 codegraph(纯 Claude Code 自带工具)<br>
+  对比维度:链路梳理准确性 · 耗时 · token · 成本 · 跨会话复用</p>
+  <div class="tags">
+    <span class="tag orange">定制版 fork</span>
+    <span class="tag gray">2026-08-08</span>
+    <span class="tag gray">3 轮 · n=1</span>
+    <span class="tag gray">model: sonnet / effort: high</span>
+    <span class="tag green">污染检查全通过</span>
+  </div>
+</div>
+
+<!-- ══════════ TL;DR ══════════ -->
+<section>
+  <div class="card tldr">
+    <h2 style="border:none;padding:0;margin:0 0 8px;">结论先行</h2>
+    <p style="margin:0;">
+      codegraph 的价值取决于问题对「跨文件结构追踪」的依赖度:<span class="arm-with">依赖度高(业务调用链)</span> → 明显更快更省;依赖度中(数据链路)→ 微赢;依赖度低(框架内部机制)→ 平手甚至更慢。
+      <strong>你接手项目时的问法——"前端调哪个接口、查哪张表、谁写入、怎么异步"——恰好是依赖度最高的那一类</strong>,所以对本项目 value 是真实的。
+      跨会话场景优势显著:WITHOUT 的知识存在 agent 上下文里、换会话即蒸发;codegraph 的索引持久在磁盘,换会话 1~4 次调用即复得。
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ 方法学 ══════════ -->
+<section>
+  <h2><span class="idx">M</span> 方法学 — 怎么跑的</h2>
+  <div class="card">
+    <ul>
+      <li><strong>工具</strong>:项目自带 <code>scripts/agent-eval/run-all.sh</code> —— with 臂 = codegraph-only MCP(Read/Grep/Bash 仍可用),without 臂 = 空 MCP。两臂唯一差异就是 codegraph 是否存在。</li>
+      <li><strong>防作弊(no-cli-shim)</strong>:两臂都屏蔽 <code>codegraph</code> CLI(净化 PATH + PreToolUse 钩子双保险),防止 without 臂通过 Bash 偷调 CLI。历史统计中 14/15 的 without 臂会这么干,必须拦。</li>
+      <li><strong>模型</strong>:统一 <code>sonnet / effort=high</code> —— 项目强制的地板模型策略(在"较笨"模型上验证,优势能泛化到更强的 agent)。</li>
+      <li><strong>问题形态</strong>:多轮问题用 <code>||</code> 分隔,自动 <code>--resume</code> 续上下文,模拟真实多轮追问。</li>
+      <li><strong>污染检查</strong>:每一臂结束后核对 <code>CLI calls that RETURNED output = 0</code> —— 三轮全部通过。</li>
+    </ul>
+    <div class="callout warn">
+      <span class="ttl">⚠ 样本量局限</span>
+      每轮 <strong>n=1</strong>。项目文档明确 "run-to-run variance is large — never conclude from n=1"。数字看<strong>方向</strong>和<strong>量级</strong>,单次绝对值会波动。
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 三轮趋势总览 ══════════ -->
+<section>
+  <h2><span class="idx">T</span> 三轮结果总览</h2>
+  <div class="card">
+    <div class="table-scroll">
+    <table>
+      <tr>
+        <th>实验</th><th>问题性质</th><th>WITHOUT 耗时</th><th>WITH 耗时</th><th>WITHOUT cost</th><th>WITH cost</th><th>判定</th>
+      </tr>
+      <tr>
+        <td>实验一</td><td>Spring 框架机制(线程/生命周期内部)</td>
+        <td class="ind">114s</td><td class="ind">222s</td>
+        <td class="ind">$0.80</td><td class="ind">$1.61</td>
+        <td><span class="pill lose">WITH 输</span></td>
+      </tr>
+      <tr>
+        <td>实验二</td><td>大屏数据链路(前端→后端→库)</td>
+        <td class="ind">196s</td><td class="ind">194s</td>
+        <td class="ind">$1.77</td><td class="ind">$1.58</td>
+        <td><span class="pill tie">持平 / 微赢</span></td>
+      </tr>
+      <tr>
+        <td>实验三</td><td>告警功能链路(多事件链)</td>
+        <td class="ind">172s</td><td class="ind">130s</td>
+        <td class="ind">$1.52</td><td class="ind">$1.10</td>
+        <td><span class="pill win">WITH 明显赢</span></td>
+      </tr>
+    </table>
+    </div>
+    <p class="muted" style="color:var(--muted);font-size:12.5px;">实验一为早期单独一轮;实验二/三来自同批 4 臂并行(每场景 with/without 各一臂,目录完全隔离)。</p>
+  </div>
+</section>
+
+<!-- ══════════ 实验一 ══════════ -->
+<section>
+  <h2><span class="idx">01</span> 实验一 — Spring 框架机制题</h2>
+  <div class="card">
+    <p><strong>问题</strong>:change 消息从 MQTT 进入后如何写入告警库 + 追问 <code>MqttDataReceiver</code> 生命周期钩子 / <code>onThresholdAlarm</code> 在什么线程执行。</p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>指标</th><th>WITHOUT</th><th>WITH</th><th>差异</th></tr>
+      <tr><td>耗时</td><td class="ind">114s</td><td class="ind">222s</td><td class="delta-bad">WITH 慢 2×</td></tr>
+      <tr><td>工具调用</td><td class="ind">16</td><td class="ind">18</td><td class="delta-neutral">接近</td></tr>
+      <tr><td>Read</td><td class="ind">8</td><td class="ind">1</td><td class="delta-good">WITH 省 7 次</td></tr>
+      <tr><td>codegraph_explore</td><td class="ind">0</td><td class="ind">3</td><td>—</td></tr>
+      <tr><td>Bash</td><td class="ind">8</td><td class="ind">14</td><td class="delta-bad">WITH 多 6 次</td></tr>
+      <tr><td>tokens</td><td class="ind">414,354</td><td class="ind">1,133,590</td><td class="delta-bad">WITH 多 2.7×</td></tr>
+      <tr><td>cost</td><td class="ind">$0.80</td><td class="ind">$1.61</td><td class="delta-bad">WITH 贵 2×</td></tr>
+      <tr><td>准确性</td><td colspan="2">两臂都完整梳理出正确链路</td><td class="delta-neutral">持平</td></tr>
+    </table>
+    </div>
+    <h3>为什么 WITH 反而慢</h3>
+    <p>WITH 臂拿到 <code>@Async</code>/<code>@EventListener</code> 边后,为证明"在哪个线程上执行",去反编译 Spring 框架 jar(<code>javap -c</code> × 10+)确认 <code>ApplicationListenerMethodAdapter</code> 机制——烧光了 token 和时间。WITHOUT 臂因多读了 <code>VideoAsyncConfig.java</code>,turn2 一次 grep 就答完。</p>
+    <div class="callout info"><span class="ttl">启示</span>这是「框架内部机制」类问题 —— 不是业务代码调用链,而是框架行为推理,codegraph 图谱(存的是项目结构)天然不擅长。属于对 WITH 不利的样本,不代表工具失效。</div>
+  </div>
+</section>
+
+<!-- ══════════ 实验二 ══════════ -->
+<section>
+  <h2><span class="idx">02</span> 实验二 — 大屏数据链路</h2>
+  <div class="card">
+    <div class="verdict"><span class="pill tie">持平 / 微赢</span><span style="font-size:13px;color:var(--muted)">工具调用省 51%,cost 省 11%,时长持平</span></div>
+    <p><strong>问题</strong>:大屏展示数据从前端页面到后端到数据库的完整链路——前端调哪个接口/多久轮询、后端查哪张表/有没有缓存、数据是 MQTT 推送还是定时任务拉取。</p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>指标</th><th>WITHOUT</th><th>WITH</th><th>差异</th></tr>
+      <tr><td>耗时</td><td class="ind">196s</td><td class="ind">194s</td><td class="delta-neutral">持平</td></tr>
+      <tr><td>工具调用</td><td class="ind">49</td><td class="ind">24</td><td class="delta-good">WITH 省 51%</td></tr>
+      <tr><td>Read</td><td class="ind">15</td><td class="ind">12</td><td class="delta-neutral">接近</td></tr>
+      <tr><td>codegraph_explore</td><td class="ind">0</td><td class="ind">2</td><td>—</td></tr>
+      <tr><td>Bash</td><td class="ind">34</td><td class="ind">10</td><td class="delta-good">WITH 省 71%</td></tr>
+      <tr><td>tokens</td><td class="ind">1,727,586</td><td class="ind">1,210,562</td><td class="delta-good">WITH 省 30%</td></tr>
+      <tr><td>cost</td><td class="ind">$1.77</td><td class="ind">$1.58</td><td class="delta-good">WITH 省 11%</td></tr>
+      <tr><td>准确性</td><td colspan="2">两臂都完整(精确到行号、Redis 缓存、GreptimeDB 主路径 + PG 降级)</td><td class="delta-neutral">持平</td></tr>
+    </table>
+    </div>
+    <h3>各自的深入发现</h3>
+    <ul>
+      <li><strong>WITH</strong>:发现「死代码轮询」(stores 里 2s 轮询无人调用)、「resp 主题未被订阅」等。</li>
+      <li><strong>WITHOUT</strong>:发现「3s 轮询 &lt; 5s 缓存 TTL」是刻意防抖设计——靠 15 次 Read 硬啃同样啃出。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ══════════ 实验三 ══════════ -->
+<section>
+  <h2><span class="idx">03</span> 实验三 — 告警功能链路</h2>
+  <div class="card">
+    <div class="verdict"><span class="pill win">WITH 明显赢</span><span style="font-size:13px;color:var(--muted)">快 24% · 工具省 54% · Read 0 次 · cost 省 28%</span></div>
+    <p><strong>问题</strong>:告警规则配置写哪个表、用什么实时数据判断、告警存哪、前端展示调什么接口。</p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>指标</th><th>WITHOUT</th><th>WITH</th><th>差异</th></tr>
+      <tr><td>耗时</td><td class="ind">172s</td><td class="ind">130s</td><td class="delta-good">WITH 快 24%</td></tr>
+      <tr><td>工具调用</td><td class="ind">37</td><td class="ind">17</td><td class="delta-good">WITH 省 54%</td></tr>
+      <tr><td>Read</td><td class="ind">12</td><td class="ind"><strong>0</strong></td><td class="delta-good">WITH 0 次 Read</td></tr>
+      <tr><td>codegraph_explore</td><td class="ind">0</td><td class="ind">4</td><td>—</td></tr>
+      <tr><td>Bash</td><td class="ind">25</td><td class="ind">13</td><td class="delta-good">WITH 省 48%</td></tr>
+      <tr><td>tokens</td><td class="ind">1,401,010</td><td class="ind">848,778</td><td class="delta-good">WITH 省 39%</td></tr>
+      <tr><td>cost</td><td class="ind">$1.52</td><td class="ind">$1.10</td><td class="delta-good">WITH 省 28%</td></tr>
+      <tr><td>准确性</td><td colspan="2">两臂都发现「告警规则空壳」关键事实</td><td class="delta-neutral">持平</td></tr>
+    </table>
+    </div>
+    <h3>关键发现(两臂都答出)</h3>
+    <ul>
+      <li><strong>「告警规则」功能是空壳</strong>:前端 <code>alarm-rules/index.vue</code> 硬编码、<code>alarm-rule.ts</code> API 是死代码、后端无 <code>/alarm-rules</code> 接口、无 <code>alarm_rule</code> 表。</li>
+      <li>真正承载阈值的是 <code>gateway_point_table</code>;告警判断在网关固件侧,后端只做「MQTT 事件接收 → 分发 → 落 <code>alarm_record</code>」。</li>
+      <li>WITHOUT 额外发现「点表保存后 MQTT 下发事件被注释掉」的断点。</li>
+    </ul>
+    <div class="callout info"><span class="ttl">定制边生效的证据</span>WITH 臂首次 explore 即看到 <code>handle → onThresholdAlarm [dynamic: spring event]</code> 与 <code>AlarmLogEngine → onThresholdAlarm [dynamic: Spring @Async entry]</code> —— 这两条边正是定制分支补的,静态图里原本没有,两臂回答中仅 WITH 有。</div>
+  </div>
+</section>
+
+<!-- ══════════ 跨会话优势 ══════════ -->
+<section>
+  <h2><span class="idx">04</span> 跨会话复用 — 会话满了 / 换新会话时</h2>
+  <div class="card">
+    <p>接手项目会开几十个会话。问题:换新会话后,两臂各自要重新付出多少检索成本?</p>
+    <div class="table-scroll">
+    <table>
+      <tr><th>维度</th><th>WITHOUT(纯自带)</th><th>WITH(codegraph)</th></tr>
+      <tr>
+        <td>检索结果存在哪</td>
+        <td class="arm-without">agent 的会话上下文里 —— <strong>会话结束即蒸发</strong></td>
+        <td class="arm-with">磁盘 <code>.codegraph/codegraph.db</code>(本仓库 50MB / 19,380 节点)<strong>—— 跨会话/跨进程存活</strong></td>
+      </tr>
+      <tr>
+        <td>换新会话重建成本(实测)</td>
+        <td class="arm-without">大屏:15 Read + 34 Bash<br>告警:12 Read + 25 Bash<br>—— 全部从零重来</td>
+        <td class="arm-with">大屏:2 次 explore<br>告警:4 次 explore<br>—— 索引已在磁盘,重新调用即可</td>
+      </tr>
+      <tr>
+        <td>会话间隙的代码改动</td>
+        <td class="arm-without">不知道改了啥,可能读到旧认知</td>
+        <td class="arm-with">daemon 连接时 <code>(size, mtime)</code> 核对,增量同步后返回最新结构</td>
+      </tr>
+    </table>
+    </div>
+    <h3>一个精确的边界</h3>
+    <p>codegraph 的<strong>会话内去重</strong>(<code>explore-session-state.ts</code>)是 per-session、不跨会话的——换新会话后 explore 会重新返回全部源码(这是设计意图:新 agent 从没看过,必须重新给)。</p>
+    <p>所以准确的说法是:<strong>「检索能力(索引)跨会话持久,重新取回只需 1~4 次调用」</strong>,而不是「explore 的结果本身直接继承」。但这一点对 WITHOUT 仍是压倒性优势——它没有持久底座,每次都是从头挖。</p>
+    <div class="callout warn"><span class="ttl">净结论</span>WITHOUT 把知识当<strong>会话态</strong>(上下文),WITH 把知识当<strong>持久态</strong>(磁盘索引)。换会话的痛点对 codegraph 不构成伤害,因为它的资产根本不放在上下文里。</div>
+  </div>
+</section>
+
+<!-- ══════════ 赢面光谱 ══════════ -->
+<section>
+  <h2><span class="idx">05</span> 综合结论 — 赢面光谱</h2>
+  <div class="card">
+    <p>三轮合起来的规律,比任何单轮都可靠:</p>
+    <div class="spectrum">
+      <div class="seg lose">
+        <span class="t">依赖度低</span>
+        <span class="d">框架内部机制推理<br>→ 平手甚至输</span>
+      </div>
+      <div class="seg tie">
+        <span class="t">依赖度中</span>
+        <span class="d">单条数据链路<br>→ 微赢(工具/成本省)</span>
+      </div>
+      <div class="seg win">
+        <span class="t">依赖度高</span>
+        <span class="d">多事件异步调用链<br>→ 明显赢(快/省/0 Read)</span>
+      </div>
+    </div>
+    <p><strong>对 PEMS 的落点</strong>:接手维护时的典型问法——"前端调哪个接口、查哪张表、谁写入、怎么异步、有无缓存"——全部落在光谱右端。这类问题 With 臂的省幅:工具调用 <span class="delta-good">-51%~-54%</span>、token <span class="delta-good">-30%~-39%</span>、cost <span class="delta-good">-11%~-28%</span>,且越复杂的链路优势越明显。</p>
+  </div>
+</section>
+
+<!-- ══════════ 现场验证计划 ══════════ -->
+<section>
+  <h2><span class="idx">06</span> 现场验证计划 — 在 PEMS 上持续积累</h2>
+  <div class="card">
+    <p>本报告是受控 A/B 的起点。接下来在真实使用中积累体验,记录点:</p>
+    <ul>
+      <li><strong>工具采纳</strong>:实际会话里 agent 是否稳定先调 <code>codegraph_explore</code> 而非直接 Read。</li>
+      <li><strong>sufficiency</strong>:explore 一次返回是否足够让 agent 停下,还是常需第二次/转 Bash。</li>
+      <li><strong>跨会话</strong>:连续多个会话中,第二次起的会话是否明显更快(索引热复用)。</li>
+      <li><strong>盲区</strong>:哪些问题 codegraph 答不上导致 agent 退回 Read —— 记录下来作为后续定制方向(如异常分发链、事务切面)。</li>
+      <li><strong>框架机制题</strong>:遇到"这个框架内部怎么运行"时,确认它会比纯业务题慢 —— 这类题直接让 agent 查源码反而更快。</li>
+    </ul>
+    <div class="callout info"><span class="ttl">方法提醒</span>若要做严肃回归对比,遵循项目方法论:同模型(sonnet/high)、≥2 次取中位数、跑前预热 daemon、防 CLI 污染。单次结论只信方向不信绝对值。</div>
+  </div>
+</section>
+
+<!-- ══════════ 原始数据 ══════════ -->
+<section>
+  <h2><span class="idx">A</span> 附录 — 原始数据位置</h2>
+  <div class="card">
+    <table>
+      <tr><th>运行</th><th>输出目录(本机)</th></tr>
+      <tr><td>实验一(Spring 机制题)</td><td class="mono">/tmp/pems-ab-final/</td></tr>
+      <tr><td>实验二/三(大屏 + 告警,隔离目录)</td><td class="mono">/tmp/pems-ab3/{sc1,sc2}-{with,without}/</td></tr>
+    </table>
+    <p style="font-size:13px;color:var(--muted);margin-top:10px;">每目录含 <code>run-headless-*.jsonl</code>(完整工具序列 + token/cost)与 <code>.err</code>。可用 <code>scripts/agent-eval/parse-run.mjs</code> 与 <code>compare-arms.mjs</code> 复跑解析。</p>
+  </div>
+</section>
+
+<footer>
+  <p>CodeGraph 定制版 A/B 对比评估 · 基于 <code>feat/spring-lifecycle-annotations</code> 分支 · 被测项目 PEMS(<span class="mono">D:\project\pems_v2</span> / <span class="mono">~/project/pems</span>)</p>
+  <p>更新记录:2026-08-08 初版(三轮 A/B + 跨会话分析)。后续在 PEMS 上实际使用时在本文件补充现场记录。</p>
+</footer>
+
+</div>
