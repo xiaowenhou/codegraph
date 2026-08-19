@@ -113,3 +113,89 @@ describe('codegraph_explore — blast radius', () => {
     expect(text).not.toMatch(/Blast radius[\s\S]*`lonelyLeaf`/);
   });
 });
+
+/**
+ * Cross-module caller promotion (PEMS dogfood, 2026-08-18). A monorepo root
+ * symbol typically has a crowd of same-module callers plus a handful from a
+ * SIBLING module — and on PEMS the sibling was the interesting one (the sole
+ * writer of AlarmRecord lives in pems-collector while 18 same-module callers
+ * buried it under "+N more"). Blast radius must sort cross-module callers
+ * (path LCA depth <= 2) FIRST and tag them, so they can never be truncated
+ * behind the same-module crowd.
+ */
+describe('codegraph_explore — blast radius cross-module caller promotion', () => {
+  let testDir: string;
+  let cg: CodeGraph;
+  let handler: ToolHandler;
+
+  beforeEach(async () => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-blast-xmod-'));
+    // Monorepo layout mirroring PEMS: backend/<module>/src/... — the LCA of
+    // backend/common/src/core.ts and backend/collector/src/writer.ts is
+    // `backend/` (depth 2) → cross-module; same-module callers fork at depth 3.
+    const commonSrc = path.join(testDir, 'backend', 'common', 'src');
+    const collectorSrc = path.join(testDir, 'backend', 'collector', 'src');
+    fs.mkdirSync(commonSrc, { recursive: true });
+    fs.mkdirSync(collectorSrc, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(commonSrc, 'core.ts'),
+      `export function record() { return 1; }\n`,
+    );
+    // 4 same-module callers — enough to fill the FILE_CAP of 4 and push a
+    // naive flat list into "+N more" territory.
+    for (let i = 1; i <= 4; i++) {
+      fs.writeFileSync(
+        path.join(commonSrc, `local${i}.ts`),
+        `import { record } from './core';\n` +
+        `export function localCaller${i}() { return record(); }\n`,
+      );
+    }
+    // The cross-module caller — the ONE the agent is looking for.
+    fs.writeFileSync(
+      path.join(collectorSrc, 'writer.ts'),
+      `import { record } from '../../common/src/core';\n` +
+      `export function writeRecord() { return record(); }\n`,
+    );
+
+    cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
+    await cg.indexAll();
+    handler = new ToolHandler(cg);
+  });
+
+  afterEach(() => {
+    if (cg) cg.destroy();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('sorts a cross-module caller first and tags it, ahead of same-module callers', async () => {
+    const res = await handler.execute('codegraph_explore', { query: 'record' });
+    const text = res.content[0].text;
+
+    expect(text).toContain('**Blast radius');
+    const line = text.split('\n').find((l: string) => l.startsWith('- `record`'));
+    expect(line).toBeDefined();
+
+    // Tagged as cross-module.
+    expect(line).toContain('⚠ cross-module');
+    // The cross-module caller file renders BEFORE any same-module caller file —
+    // promotion is an ordering guarantee, not just an annotation.
+    const writerIdx = line.indexOf('collector/src/writer.ts');
+    const localIdx = line.indexOf('common/src/local1.ts');
+    expect(writerIdx).toBeGreaterThan(-1);
+    expect(localIdx).toBeGreaterThan(-1);
+    expect(writerIdx).toBeLessThan(localIdx);
+  });
+
+  it('never truncates the cross-module caller behind the same-module crowd', async () => {
+    const res = await handler.execute('codegraph_explore', { query: 'record' });
+    const line = res.content[0].text
+      .split('\n')
+      .find((l: string) => l.startsWith('- `record`'));
+
+    // 5 non-test callers against FILE_CAP 4: someone must be cut, but never
+    // the cross-module one — the same-module files absorb the truncation.
+    expect(line).toContain('+1 more');
+    expect(line).toContain('collector/src/writer.ts');
+  });
+});

@@ -830,6 +830,54 @@ const POINTER_HEADER = '**Not shown above — explore these names for their sour
 /** Most files the pointer list ever names one-per-line; the rest are a count. */
 const POINTER_MAX_FILES = 10;
 /**
+ * Depth (in directory segments) of the closest common ancestor of two
+ * POSIX-style repo-relative paths. `backend/common/src/x.ts` vs
+ * `backend/collector/src/y.ts` share `backend/` → 1; two files in the same
+ * `src/` → that src's depth. File basenames never count as segments.
+ */
+function lcaDepth(a: string, b: string): number {
+  const sa = a.split('/');
+  const sb = b.split('/');
+  let i = 0;
+  while (i < sa.length - 1 && i < sb.length - 1 && sa[i] === sb[i]) i++;
+  return i;
+}
+
+/**
+ * API-path literal extractor for the dangling-route check: quoted strings
+ * that start with `/` and have ≥2 path segments. External (`https://…`) and
+ * protocol-relative (`//host/…`) URLs can't match — the first segment must be
+ * alphanumeric-ish, which a dotted host never satisfies.
+ */
+const API_PATH_RE = /['"`](\/[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_{}:<>-]+)*)['"`]/g;
+/**
+ * Receivers that make a string literal an API call — `request.get<…>(…)`,
+ * `fetch(…)`, `axios(…)`. Single-segment literals (`'/alarm-rules'`) need one
+ * of these before the quote: SPA routers push the same shape
+ * (`router.push('/alarm-records')`), and naming a page route as a "missing
+ * backend" would train the agent to ignore the section.
+ */
+const API_RECEIVER_RE = /\b(?:get|post|put|patch|delete|head|fetch|axios|request)\b[^'"`]*$/;
+function extractApiPathCalls(content: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(API_PATH_RE)) {
+    const call = m[1];
+    if (call === undefined) continue;
+    if (!call.slice(1).includes('/')) {
+      const before = content.slice(Math.max(0, (m.index ?? 0) - 64), m.index ?? 0);
+      if (!API_RECEIVER_RE.test(before)) continue;
+    }
+    out.push(call);
+  }
+  return out;
+}
+
+/** A route path segment that is a parameter placeholder: `:id`, `{id}`, `<id>`. */
+function isParamSeg(seg: string): boolean {
+  return seg.startsWith(':') || (seg.startsWith('{') && seg.endsWith('}'))
+    || (seg.startsWith('<') && seg.endsWith('>'));
+}
+/**
  * One pointer line: the file plus enough symbol names to make it NAMEABLE in a
  * follow-up explore. Capped — an un-capped list ran to ~1.9K on the #1500
  * fixture (12 generated CRUD symbols on one line), meta-text bought at the
@@ -3039,6 +3087,8 @@ export class ToolHandler {
   private buildBlastRadiusSection(cg: CodeGraph, subgraph: Subgraph): string {
     const ROOT_CAP = 5; // only the symbols the query actually targeted
     const FILE_CAP = 4; // caller files listed per symbol before "+N more"
+    const CROSS_LCA_MAX = 2; // paths forking at depth ≤ 2 = different module
+    const CROSS_TAG_CAP = 3; // max tagged callers per symbol (shared-utils fan-in)
     const MEANINGFUL = new Set<string>([
       'function', 'method', 'class', 'interface', 'struct', 'union', 'trait', 'protocol',
       'enum', 'type_alias', 'component', 'constant', 'variable', 'property', 'field',
@@ -3067,8 +3117,30 @@ export class ToolHandler {
       const testFiles = callerFiles.filter((f) => isTestFile(f));
       const nonTest = callerFiles.filter((f) => !isTestFile(f));
 
-      const shown = nonTest.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ');
-      const more = nonTest.length > FILE_CAP ? ` +${nonTest.length - FILE_CAP} more` : '';
+      // Cross-module promotion (PEMS dogfood): a caller from a SIBLING module
+      // of the root — paths fork at depth ≤ 2, e.g. `backend/<module>/src/…`,
+      // `packages/<pkg>/src/…` — is structurally the interesting one (the sole
+      // writer of AlarmRecord lives in pems-collector while 18 same-module
+      // callers buried it under "+N more"). Such files sort FIRST and carry a
+      // tag; the fork must lead into a subtree (≥ lca+3 segments), not just a
+      // sibling FILE of a flat layout — `src/a.ts` vs `src/b.ts` has no modules.
+      const relRoot = rel(root.filePath);
+      const crossModule = (f: string): boolean => {
+        const lca = lcaDepth(relRoot, f);
+        return lca <= CROSS_LCA_MAX && f.split('/').length >= lca + 3;
+      };
+      const ranked = [...nonTest].sort(
+        (a, b) => Number(crossModule(b)) - Number(crossModule(a)),
+      );
+      let tagged = 0;
+      const shown = ranked.slice(0, FILE_CAP).map((f) => {
+        if (tagged < CROSS_TAG_CAP && crossModule(f)) {
+          tagged++;
+          return `\`${f}\` ⚠ cross-module`;
+        }
+        return `\`${f}\``;
+      }).join(', ');
+      const more = ranked.length > FILE_CAP ? ` +${ranked.length - FILE_CAP} more` : '';
       const where = nonTest.length > 0 ? ` in ${shown}${more}` : '';
       const tests = testFiles.length > 0
         ? `; tests: ${testFiles.slice(0, FILE_CAP).map((f) => `\`${f}\``).join(', ')}${testFiles.length > FILE_CAP ? ` +${testFiles.length - FILE_CAP}` : ''}`
@@ -3082,6 +3154,116 @@ export class ToolHandler {
 
     return [
       '**Blast radius — what depends on these (update/verify before editing)**',
+      '',
+      ...entries,
+      '',
+    ].join('\n');
+  }
+
+  /**
+   * Dangling API references (PEMS dogfood, 2026-08-18): shown code that CALLS
+   * a route the graph has no route node for — while sibling routes prove the
+   * path family belongs to this project — is the single fact that answers
+   * "where is the backend?" (PEMS: frontend alarm-rule.ts calls
+   * /api/v1/alarm-rules; no backend exists; explore stayed silent and the
+   * agent Read files to find that out). Silence reads as "try other words";
+   * the missing route IS the answer. A call is SERVED when any route matches
+   * it segment-wise (a parameter segment `:id`/`{id}` matches anything, and a
+   * shorter call is a prefix of a longer route — the list/detail endpoint
+   * pair), so existing routes never get flagged.
+   */
+  private buildDanglingRouteSection(cg: CodeGraph, callsByFile: Map<string, string[]>): string {
+    const MAX_ENTRIES = 3;
+    if (callsByFile.size === 0) return '';
+
+    let routes: Array<{ name: string; path: string }> = [];
+    try { routes = cg.getNodesByKind('route').map((n) => ({
+      name: n.name,
+      path: n.name.slice(n.name.indexOf(' ') + 1), // "GET /api/v1/x" → "/api/v1/x"
+    })); } catch { return ''; }
+    if (routes.length === 0) return '';
+
+    /**
+     * Align call segments against route segments starting at routeStart.
+     * Returns the count of CONCRETE (non-parameter, equal) aligned pairs, or
+     * -1 on any concrete mismatch. Params match anything but never count as
+     * evidence on their own — otherwise `/{id}` would "serve" every
+     * one-segment call and the signal would be gone (PEMS: `/alarm-rules` vs
+     * `…/alarm-records/{id}`).
+     */
+    const align = (cs: string[], rs: string[], routeStart: number): number => {
+      let concrete = 0;
+      for (let i = 0; i < cs.length; i++) {
+        const r = rs[routeStart + i] ?? '';
+        const c = cs[i] ?? '';
+        if (isParamSeg(r)) continue;
+        if (r.toLowerCase() !== c.toLowerCase()) return -1;
+        concrete++;
+      }
+      return concrete;
+    };
+    const segs = (p: string): string[] => p.split('/').filter((s) => s !== '');
+    const served = (call: string): boolean => {
+      const cs = segs(call);
+      return routes.some(({ path }) => {
+        const rs = segs(path);
+        if (cs.length > rs.length) return false;
+        // Full path (`/api/v1/alarm-records` prefixes `…/{id}` — list/detail
+        // pair) OR suffix (`/alarm-records` — baseURL-relative call against
+        // the full route table).
+        return align(cs, rs, 0) > 0 || align(cs, rs, rs.length - cs.length) > 0;
+      });
+    };
+    /** First token of a segment (`alarm-rules`/`alarmRules` → `alarm`). */
+    const leadingToken = (s: string): string =>
+      (s.split('-')[0] ?? s).split(/(?=[A-Z])/)[0] ?? s;
+    const TOKEN_STOP = new Set([
+      'api', 'v1', 'v2', 'v3', 'id', 'me', 'list', 'detail',
+      'static', 'assets', 'public', 'admin',
+    ]);
+    /**
+     * Family evidence, two shapes. Full-path calls: a route sharing the first
+     * two segments (`/api/v1/…`). baseURL-relative calls: a route segment
+     * carrying the same resource token (`/alarm-rules` ~ `/api/v1/alarm-records`).
+     */
+    const sibling = (call: string): string | null => {
+      const cs = segs(call);
+      for (const { path, name } of routes) {
+        const rs = segs(path);
+        if (rs.length >= 3 && cs.length >= 3
+          && rs[0]!.toLowerCase() === cs[0]!.toLowerCase()
+          && rs[1]!.toLowerCase() === cs[1]!.toLowerCase()) return name;
+      }
+      for (const { path, name } of routes) {
+        for (const r of segs(path)) {
+          if (isParamSeg(r)) continue;
+          const rt = leadingToken(r);
+          if (TOKEN_STOP.has(rt)) continue;
+          if (cs.some((c) => leadingToken(c) === rt)) return name;
+        }
+      }
+      return null;
+    };
+
+    const entries: string[] = [];
+    const seen = new Set<string>();
+    for (const [file, calls] of callsByFile) {
+      for (const call of calls) {
+        if (seen.has(call) || entries.length >= MAX_ENTRIES) continue;
+        seen.add(call);
+        if (served(call)) continue;
+        const sib = sibling(call);
+        if (!sib) continue;
+        entries.push(
+          `- \`${call}\` (called from \`${file}\`) — sibling routes exist (\`${sib}\`), ` +
+          `but no route node serves this path: backend missing or not indexed.`,
+        );
+      }
+    }
+    if (entries.length === 0) return '';
+
+    return [
+      '**Dangling API references** — shown code calls routes with no backend handler in the index:',
       '',
       ...entries,
       '',
@@ -3986,6 +4168,11 @@ export class ToolHandler {
     const blastRadius = this.buildBlastRadiusSection(cg, subgraph);
     if (blastRadius) lines.push(blastRadius);
 
+    // API path literals found in each file the render loop reads; consumed
+    // after the loop (filtered to what actually rendered) by the dangling-route
+    // section. Keyed repo-relative, same as every path we print.
+    const apiCallsByFile = new Map<string, string[]>();
+
     // Relationship map — show how symbols connect
     const significantEdges = subgraph.edges.filter(e =>
       e.kind !== 'contains' // skip contains — it's implied by file grouping
@@ -4393,6 +4580,8 @@ export class ToolHandler {
       }
 
       const fileLines = fileContent.split('\n');
+      const apiCalls = extractApiPathCalls(fileContent);
+      if (apiCalls.length > 0) apiCallsByFile.set(filePath, apiCalls);
       const lang = group.nodes[0]?.language || '';
       const withLineNumbers = exploreLineNumbersEnabled();
       // Language-neutral separator between two non-contiguous slices of one file
@@ -5649,6 +5838,18 @@ export class ToolHandler {
     // the thing we drop. Lines already in `lines` are only MUTATED from here on
     // (the verbatim header, the summary sentinel), never re-ordered, so the
     // index stays valid.
+    // Dangling API references — a HEAD insert, spliced in right under the
+    // summary line. Every size mechanism below spends from the tail, so this
+    // can never be the section traded away: on PEMS the missing route WAS the
+    // answer, and silence read as "try other words". Filtered to files whose
+    // sections actually rendered, so "shown code" is literal.
+    const shownSet = new Set(renderedFilePaths);
+    const shownApiCalls = new Map(
+      [...apiCallsByFile].filter(([fp]) => shownSet.has(fp)),
+    );
+    const danglingRoutes = this.buildDanglingRouteSection(cg, shownApiCalls);
+    if (danglingRoutes) lines.splice(summaryLineIdx + 1, 0, danglingRoutes);
+
     const epilogueStart = lines.length;
 
     // The curated header count is computed from the files that SURVIVE the final
